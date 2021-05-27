@@ -1,0 +1,557 @@
+#!/usr/bin/perl
+
+#OUTSTANDING TASKS
+#-----------------
+#  Add more performance data details to the output  (ie fan speeds)
+#  Capture the system temperatures, fan status, etc.  Use the check_supermicro_ipmi script as a guide
+
+# CHANGE LOG
+# ----------
+# 2021/03/02	njeffrey	Script created to monitor Dell iDRAC9 serviced processor
+# 2021/03/03	njeffrey	Add get_system_power_state and get_system_uptime subroutines
+
+# nagios shell script to query service processor on Dell motherboard to read temperature sensors, fan speeds, etc.
+
+
+# NOTES
+# -----
+#
+#  This script should return one (and only one) line of ouput.  Multiple
+#  lines of output are silently ignored by nagios.
+#
+#  The line of output will become the body of the alert message sent by nagios
+#
+#
+#  This script queries a remote host via SNMP
+#
+#  You will need a section in the services.cfg
+#  file on the nagios server that looks similar to the following.
+#      # Define a service to check the SuperMicro IPMI
+#      # Parameters are SNMP community name
+#      define service {
+#              use                             generic-service
+#              hostgroup_name                  all_dell_idrac9
+#              service_description             iDRAC
+#              check_command                   check_dell_idrac9!public
+#              }
+#
+#
+#  You will also need a command definition similar to the following in commands.cfg on the nagios server
+#      # 'check_dell_idrac9' command definition
+#      # parameters are -H hostname -C snmp_community
+#      define command{
+#              command_name    check_dell_idrac9
+#              command_line    $USER1$/check_dell_idrac9 -H $HOSTADDRESS$ -C $ARG1$
+#              }
+#
+#
+
+
+# Different Dell iDRAC controllers may use slightly different OID values.  
+# NOTE: The examples below may differ depending on the model of the IPMI controller
+#
+# .1.3.6.1.4.1.674.10892.5.2.1.0 GlobalSystemStatus 1=Other 2=Unknown 3=ok 4=nonCritical 5=Critical 6=nonRecoverable
+# GlobalSystemStatus             This attribute defines the overall rollup status of all components in the system being monitored by the remote access card.  
+#
+# .1.3.6.1.4.1.674.10892.5.2.3.0 GlobalStorageStatus 1=Other 2=Unknown 3=ok 4=nonCritical 5=Critical 6=nonRecoverable
+# GlobalSystemStatus             This attribute defines the overall storage status being monitored by the remote access card.  
+#
+# 1.3.6.1.4.1.674.10892.5.2.4.0  1=Other 2=Unknown 3=Off 4=On
+# systemPowerState               This attribute defines the power state of the system.
+#
+# 1.3.6.1.4.1.674.10892.5.2.5.0  
+# systemPowerUpTime               This attribute defines the power-up time of the system in seconds
+# 
+# 1.3.6.1.4.1.674.10892.5.1.3.2.0
+# systemServiceTag		  This attribute defines the service tag of the system.
+#
+# 1.3.6.1.4.1.674.10892.5.1.3.12.0 Model number
+#
+#
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.1  memoryDevicechassisIndex       This attribute defines the index (one based) of the associated system chassis.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.2  memoryDeviceIndex	        This attribute defines the index (one based) of the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.3  memoryDeviceStateCapabilities  This attribute defines the state capabilities of the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.4  memoryDeviceStateSettings      This attribute defines the state settings of the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.7  memoryDeviceType               This attribute defines the type of the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.8  memoryDeviceLocationName       This attribute defines the location of the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.10 memoryDeviceBankLocationName   This attribute defines the location of the bank for the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.14 memoryDeviceSize               This attribute defines the size in KBytes of the memory device. Zero indicates no memory installed
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.15 memoryDeviceSpeed              This attribute defines the speed in nanoseconds of the memory device. Zero indicates an unknown speed.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.21 memoryDeviceManufacturerName   This attribute defines the manufacturer of the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.22 memoryDevicePartNumberName     This attribute defines the manufacturer's part number for the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.23 memoryDeviceSerialNumberName   This attribute defines the serial number of the memory device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.50.1.26 memoryDeviceFQDD               Fully qualified device descriptor (FQDD) of the memory device.
+#
+#
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.1  processorDevicechassisIndex         This attribute defines the index (one based) of the associated system chassis.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.2	 processorDeviceIndex                This attribute defines the index (one based) of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.3	 processorDeviceStateCapabilities    This attribute defines the state capabilities of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.4	 processorDeviceStateSettings        This attribute defines the state settings of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.5	 processorDeviceStatus               This attribute defines the status of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.7	 processorDeviceType                 This attribute defines the type of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.8	 processorDeviceManufacturerName     This attribute defines the name of the manufacturer of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.9	 processorDeviceStatusState          This attribute defines the status state of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.10 processorDeviceFamily               This attribute defines the family of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.11 processorDeviceMaximumSpeed         defines the maximum speed of the processor device in MHz. Zero indicates the maximum speed is
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.12 processorDeviceCurrentSpeed         defines the current speed of the processor device in MHz. Zero indicates the current speed is
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.13 processorDeviceExternalClockSpeed   defines the speed of the external clock for the processor device in MHz. Zero indicates the ext
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.14 processorDeviceVoltage              defines the voltage powering the processor device in millivolts. Zero indicates the voltage 
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.16 processorDeviceVersionName          defines the version of the processor device. On some systems, this value contains the brand 
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.17 processorDeviceCoreCount            This attribute defines the number of processor cores detected for the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.18 processorDeviceCoreEnabledCount     This attribute defines the number of processor cores enabled for the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.19 processorDeviceThreadCount          This attribute defines the number of processor thread detected for the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.20 processorDeviceCharacteristics      defines characteristics of the processor device. This attribute is a bit field where a bit 
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.21 processorDeviceExtendedCapabilities defines extended capabilities of the processor device. This attribute is a bit field where 
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.22 processorDeviceExtendedSettings     defines extended settings of the processor device. This attribute is a bit field where a bit
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.23 processorDeviceBrandName            This attribute defines the brand of the processor device.
+# 1.3.6.1.4.1.674.10892.5.4.1100.30.1.26processorDeviceFQDD                  Fully qualified device descriptor (FQDD) of the processor device.
+
+
+
+use strict;				#enforce good coding practices
+use Getopt::Long;                       #allow --long-switches to be used as parameters.  Install with: perl -MCPAN -e 'install Getopt::Long'
+
+
+
+# declare variables
+my ($OK,$WARN,$CRITICAL,$UNKNOWN);
+my ($CHECK_NAME,$cmd,$snmpwalk,$snmpget);
+my ($host,$oid,$key,%DRAC,$community);
+my ($opt_h,$opt_v,$opt_w,$opt_c,$opt_C,$opt_H);
+my ($verbose,$output_details,$perf_data);
+$cmd = "";                                              #initialize variable
+$CHECK_NAME                 = "Dell iDRAC";		#name of nagios check
+$verbose                    = "no";                    	#yes/no variable to increase output for debugging
+#$cpu_temp_warn              = 60;			#warn if CPU temperature reaches this value in degrees celsius
+#$cpu_temp_crit              = 65;			#critical if CPU temperature reaches this value in degrees celsius
+#$system_temp_warn           = 40;			#warn if motherboard temperature sensor reaches this value in degres celsius
+#$system_temp_crit           = 45;			#critical if motherboard temperature sensor reaches this value in degres celsius
+$community                  = "NALsnmp";  		#default SNMP community name
+$output_details             = "";			#initialize variable to hold details of script output
+$snmpwalk                   = "/usr/bin/snmpwalk";	#location of binary
+$snmpget                    = "/usr/bin/snmpget";	#location of binary
+#
+# Nagios return codes
+#
+$OK=            0;
+$WARN=          1;
+$CRITICAL=      2;
+$UNKNOWN=       3;
+
+
+
+
+sub get_options {
+   #
+   # this gets the command line parameters provided by the users
+   #
+   print "running get_options subroutine \n" if ($verbose eq "yes");
+   #
+   Getopt::Long::Configure('bundling');
+   GetOptions(
+      "h"   => \$opt_h, "help"        => \$opt_h,
+      "v"   => \$opt_v, "verbose"     => \$opt_v,
+      "C=s" => \$opt_C, "community=s" => \$opt_C, "comm=s" => \$opt_C,
+      "H=s" => \$opt_H, "hostname=s"  => \$opt_H, "host=s" => \$opt_H,
+   );
+   #
+   #
+   #
+   # If the user supplied -h or --help, generate the help messages
+   #
+   if( defined( $opt_h ) ) {
+      print "Nagios plugin for determining filesystem usage. \n";
+      print "Examples: \n";
+      print "   $0 --host=myfiler --community=public \n";
+      print "   $0     -H myfiler          -C public \n";
+      print "\n\n";
+      exit $UNKNOWN;
+   }
+   #
+   # If the user supplied -v or --verbose, increase verbosity for debugging
+   if( defined( $opt_v ) ) {
+      $verbose = "yes";
+   } 
+   #
+   #
+   # If the user did not supply a --community SNMP community string, use "public"
+   #
+   if( defined( $opt_C ) ) {
+      $community = $opt_C;
+   } else {
+      $community = "public";
+   }
+   #
+   # If the user did not supply a --host=??? , generate a warning
+   #
+   if( defined( $opt_H ) ) {
+      $host = $opt_H;
+   } else {
+      print "$CHECK_NAME UNKNOWN - a remote host to check was not provided. Use this syntax: $0 -H hostname -C snmp_community\n";
+      exit $CRITICAL;                                           #exit script
+   }
+   #
+   print "host=$host community=$community \n" if ($verbose eq "yes");
+}                       #end of subroutine
+
+
+
+
+
+sub sanity_checks {
+   #
+   #
+   print "running sanity_checks subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   if ( ! -f "$snmpwalk" ) {
+      print "ERROR: Cannot find $snmpwalk \n";
+      exit;
+   }
+   if ( ! -x "$snmpwalk" ) {
+      print "ERROR: $snmpwalk is not executable by the current user\n";
+      exit;
+   }
+   if ( ! -f "$snmpget" ) {
+      print "ERROR: Cannot find $snmpget \n";
+      exit;
+   }
+   if ( ! -x "$snmpget" ) {
+      print "ERROR: $snmpget is not executable by the current user\n";
+      exit;
+   }
+}                                                       #end of subroutine
+
+
+
+
+
+sub get_system_health {
+   #
+   # This shows the overall health of the entire system
+   #
+   print "running get_system_health subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   #
+   $oid = ".1.3.6.1.4.1.674.10892.5.2.1.0";                             
+   $cmd = "$snmpget -On -v 1 -c $community $host $oid";               #use -On to output in numeric format
+   print "   running command $cmd \n" if ($verbose eq "yes");
+   #
+   open(IN,"$cmd |");                                                   #get the index numbers of the LUNs
+   while (<IN>) {                                                       #read a line from the command output
+      #
+      # looking for output similar to:  .1.3.6.1.4.1.674.10892.5.2.1.0 = INTEGER: 3
+      #
+      s/\"//g;                                                          #get rid of quotation marks
+      $DRAC{GlobalSystemStatus} = "Unknown";				#start with a dummy value
+      $DRAC{GlobalSystemStatus} = "Other"          if ( /= INTEGER: 1/ );	#figure out the current system status
+      $DRAC{GlobalSystemStatus} = "Unknown"        if ( /= INTEGER: 2/ );	#figure out the current system status
+      $DRAC{GlobalSystemStatus} = "ok"             if ( /= INTEGER: 3/ );	#figure out the current system status
+      $DRAC{GlobalSystemStatus} = "nonCritical"    if ( /= INTEGER: 4/ );	#figure out the current system status
+      $DRAC{GlobalSystemStatus} = "Critical"       if ( /= INTEGER: 5/ );	#figure out the current system status
+      $DRAC{GlobalSystemStatus} = "nonRecoverable" if ( /= INTEGER: 6/ );	#figure out the current system status
+   }                                                                    #end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine 
+
+
+
+
+sub get_system_power_state {
+   #
+   # This shows the current power state (on/off) of the server
+   #
+   print "running get_system_power_state subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   #
+   $oid = ".1.3.6.1.4.1.674.10892.5.2.4.0";                             
+   $cmd = "$snmpget -On -v 1 -c $community $host $oid";               #use -On to output in numeric format
+   print "   running command $cmd \n" if ($verbose eq "yes");
+   #
+   open(IN,"$cmd |");                                                   #get the index numbers of the LUNs
+   while (<IN>) {                                                       #read a line from the command output
+      #
+      # looking for output similar to:  .1.3.6.1.4.1.674.10892.5.2.4.0 = INTEGER: 4
+      #
+      s/\"//g;                                                          #get rid of quotation marks
+      $DRAC{systemPowerState} = "Unknown";				#start with a dummy value
+      $DRAC{systemPowerState} = "Other"     if ( /= INTEGER: 1/ );	#figure out the current power state
+      $DRAC{systemPowerState} = "Unknown"   if ( /= INTEGER: 2/ );	#figure out the current power state 
+      $DRAC{systemPowerState} = "Off"       if ( /= INTEGER: 3/ );	#figure out the current power state
+      $DRAC{systemPowerState} = "On"        if ( /= INTEGER: 4/ );	#figure out the current power state
+   }                                                                    #end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine 
+
+
+
+sub get_system_uptime {
+   #
+   # This shows the power-up time 
+   #
+   print "running get_system_uptime subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   #
+   $oid = ".1.3.6.1.4.1.674.10892.5.2.5.0";                             
+   $cmd = "$snmpget -On -v 1 -c $community $host $oid";               #use -On to output in numeric format
+   print "   running command $cmd \n" if ($verbose eq "yes");
+   #
+   open(IN,"$cmd |");                                                   #get the index numbers of the LUNs
+   while (<IN>) {                                                       #read a line from the command output
+      #
+      # looking for output similar to:  .1.3.6.1.4.1.674.10892.5.2.5.0 = INTEGER: 2504273
+      #
+      s/\"//g;                                                          #get rid of quotation marks
+      $DRAC{systemPowerUpTime} = 0;					#start with a dummy value
+      $DRAC{systemPowerUpTime} = $1  if ( /= INTEGER: ([0-9]+)/ );	#power up-time in seconds
+   }                                                                    #end of while loop
+   close IN;								#close filehandle
+   #
+   # convert seconds to a more human readable value
+   if ( ($DRAC{systemPowerUpTime} >= 60) && ($DRAC{systemPowerUpTime} <= 3600) ) {
+      $DRAC{systemPowerUpTime_humanreadable} = $DRAC{systemPowerUpTime} / 60;
+      $DRAC{systemPowerUpTime_humanreadable} = sprintf( "%.0f", $DRAC{systemPowerUpTime_humanreadable} );  	#truncate to closest minute
+      $DRAC{systemPowerUpTime_humanreadable} = "$DRAC{systemPowerUpTime_humanreadable}minutes";  		#define minute/hour/day
+   }
+   if ( ($DRAC{systemPowerUpTime} >= 3600) && ($DRAC{systemPowerUpTime} <= 86400) ) {
+      $DRAC{systemPowerUpTime_humanreadable} = $DRAC{systemPowerUpTime} / 3600;
+      $DRAC{systemPowerUpTime_humanreadable} = sprintf( "%.0f", $DRAC{systemPowerUpTime_humanreadable} );  	#truncate to closest hour
+      $DRAC{systemPowerUpTime_humanreadable} = "$DRAC{systemPowerUpTime_humanreadable}hours";  	 		#define minute/hour/day
+   }
+   if ( $DRAC{systemPowerUpTime} > 86400 ) {
+      $DRAC{systemPowerUpTime_humanreadable} = $DRAC{systemPowerUpTime} / 86400;
+      $DRAC{systemPowerUpTime_humanreadable} = sprintf( "%.0f", $DRAC{systemPowerUpTime_humanreadable} );  	#truncate to closest day
+      $DRAC{systemPowerUpTime_humanreadable} = "$DRAC{systemPowerUpTime_humanreadable}days";  	 		#define minute/hour/day
+   }
+}									#end of subroutine 
+
+
+
+
+
+sub get_system_service_tag {
+   #
+   # This shows the system service tag, which will be the first thing Dell Support asks for if you call for service
+   #
+   print "running get_system_service_tag subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   #
+   $oid = "1.3.6.1.4.1.674.10892.5.1.3.2.0";                             
+   $cmd = "$snmpget -On -v 1 -c $community $host $oid";               #use -On to output in numeric format
+   print "   running command $cmd \n" if ($verbose eq "yes");
+   #
+   open(IN,"$cmd |");                                                   #get the index numbers of the LUNs
+   while (<IN>) {                                                       #read a line from the command output
+      #
+      # looking for output similar to:  1.3.6.1.4.1.674.10892.5.1.3.2.0 = STRING: "XX11XX1"
+      #
+      s/\"//g;                                                          #get rid of quotation marks
+      $DRAC{systemServiceTag} = "unknown";				#start with a dummy value
+      $DRAC{systemServiceTag} = $1  if ( /= STRING: ([a-zA-Z0-9]+)/ );	#system service tag
+   }                                                                    #end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine 
+
+
+
+
+sub get_system_model_number {
+   #
+   # This shows the system model number
+   #
+   print "running get_system_model_number subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   #
+   $oid = "1.3.6.1.4.1.674.10892.5.1.3.12.0";                             
+   $cmd = "$snmpget -On -v 1 -c $community $host $oid";               #use -On to output in numeric format
+   print "   running command $cmd \n" if ($verbose eq "yes");
+   #
+   open(IN,"$cmd |");                                                   #get the index numbers of the LUNs
+   while (<IN>) {                                                       #read a line from the command output
+      #
+      # looking for output similar to:  1.3.6.1.4.1.674.10892.5.1.3.12.0 = STRING: "PowerEdge R740"
+      #
+      s/\"//g;                                                          #get rid of quotation marks
+      $DRAC{systemModelName} = "unknown";				#start with a dummy value
+      $DRAC{systemModelName} = $1  if ( /= STRING: ([a-zA-Z0-9 ]+)/ );	#system service tag
+   }                                                                    #end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine 
+
+
+sub get_system_ram {
+   #
+   # This shows the total amount of installed memory
+   #
+   print "running get_system_ram subroutine \n" if ($verbose eq "yes");
+   #
+   # Querying this OID shows all the installed DIMM sizes in KB, so /1024/1024 to get GB
+   # $ snmpwalk -On -v 1 -c public server1-idrac 1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.1  = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.2  = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.3  = INTEGER: 67108864    <--- DIMM size in KB, so /1024/1024 = 64GB
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.4  = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.5  = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.6  = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.7  = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.8  = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.9  = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.10 = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.11 = INTEGER: 67108864
+   # .1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1.12 = INTEGER: 67108864
+
+   #
+   #
+   $oid = "1.3.6.1.4.1.674.10892.5.4.1100.50.1.14.1";                             
+   $cmd = "$snmpwalk -On -v 1 -c $community $host $oid";               #use -On to output in numeric format
+   print "   running command $cmd \n" if ($verbose eq "yes");
+   #
+   $DRAC{memoryDeviceSize} = 0; 					#initialize variable
+   open(IN,"$cmd |");                                                   #get the index numbers of the LUNs
+   while (<IN>) {                                                       #read a line from the command output
+      s/\"//g;                                                          #get rid of quotation marks
+      $DRAC{memoryDeviceSize} += $1  if ( /= INTEGER: ([0-9]+)/ );	#system service tag
+   }                                                                    #end of while loop
+   close IN;								#close filehandle
+   #
+   $DRAC{memoryDeviceSize} = $DRAC{memoryDeviceSize} /1024/1024;	#convert KB to GB
+   $DRAC{memoryDeviceSize} = sprintf( "%.0f", $DRAC{memoryDeviceSize} ); #truncate to closest GB
+}									#end of subroutine 
+
+
+
+sub get_system_cpu {
+   #
+   # This shows the install CPU info
+   #
+   print "running get_system_cpu subroutine \n" if ($verbose eq "yes");
+   #
+   # Querying this OID shows all the processor cores
+   # $ snmpwalk -On -v 1 -c public esxprod1-idrac 1.3.6.1.4.1.674.10892.5.4.1100.30.1.18
+   # .1.3.6.1.4.1.674.10892.5.4.1100.30.1.18.1.1 = INTEGER: 12    <---- 12 cores in one socket
+   # .1.3.6.1.4.1.674.10892.5.4.1100.30.1.18.1.2 = INTEGER: 12    <---- and another 12 cores in another CPU socket
+   #
+   #
+   $oid = "1.3.6.1.4.1.674.10892.5.4.1100.30.1.18";                             
+   $cmd = "$snmpwalk -On -v 1 -c $community $host $oid";               #use -On to output in numeric format
+   print "   running command $cmd \n" if ($verbose eq "yes");
+   #
+   $DRAC{processor_socket_count} = 0; 					#initialize variable
+   $DRAC{processorDeviceCoreEnabledCount} = 0; 				#initialize variable
+   open(IN,"$cmd |");                                                   #get the index numbers of the LUNs
+   while (<IN>) {                                                       #read a line from the command output
+      s/\"//g;                                                          #get rid of quotation marks
+      if ( /= INTEGER: ([0-9]+)/ ) {					#enabled processor cores, which may be different than installed cores
+         $DRAC{processorDeviceCoreEnabledCount} += $1;  		#count the number of enabled processor cores
+         $DRAC{processor_socket_count}++; 				#increment counter to show number of CPU sockets
+      }                                                                 #end of if block
+   }                                                                    #end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine 
+
+
+
+
+
+
+sub print_output {
+   #
+   # print output in the format expected by nagios
+   #
+   print "running print_output subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   # The nagios performance data will be the same for all the outputs, so just put it in a variable that can be use by all the output options
+   #
+   # The format is:  label=value[UOM];[warn];[crit];[min];[max]
+   # On the "label=value" section is required.  The warn|crit|min|max entries are optional.
+   # You can have multiple items of perf data, just separate each section with a space
+   # UOM is Units Of Measurement.    Can be s=seconds B=bytes MB=megabytes %=percent c=counter
+   # You can use the standard nagios ranges and thresholds formats (examples below)
+   # Range definition   Generate an alert if x...
+   # ----------------   -------------------------
+   # 10                 < 0 or > 10, (outside the range of {0 .. 10})
+   # 10:                < 10, (outside {10 .. ∞})
+   # ~:10               > 10, (outside the range of {-∞ .. 10})
+   # 10:20              < 10 or > 20, (outside the range of {10 .. 20})
+   # @10:20             ≥ 10 and ≤ 20, (inside the range of {10 .. 20})
+   #
+   $perf_data = "";
+   #
+   #
+   # Much of the text of the output will be the same.  Put the common stuff in a variable so we can simplify the outputs
+   $output_details = "Health:$DRAC{GlobalSystemStatus} Power:$DRAC{systemPowerState} Uptime:$DRAC{systemPowerUpTime_humanreadable} CPU_sockets:$DRAC{processor_socket_count} CPU_cores:$DRAC{processorDeviceCoreEnabledCount} RAM:$DRAC{memoryDeviceSize}GB Model:$DRAC{systemModelName} ServiceTag:$DRAC{systemServiceTag} ";
+   #
+   #
+   # Check the global system health
+   #
+   if ( $DRAC{GlobalSystemStatus} eq "Other" ||  $DRAC{GlobalSystemStatus} eq "Unknown" ) {
+      print "$CHECK_NAME UNKNOWN - could not determine system system status.  Please login to iDRAC to investigate.  $output_details | $perf_data \n";
+      exit $UNKNOWN;
+   }
+   if ( $DRAC{GlobalSystemStatus} eq "nonCritical" ) {
+      print "$CHECK_NAME WARN - nonCritical system error.  Please login to iDRAC to investigate.  $output_details | $perf_data \n";
+      exit $WARN;
+   }
+   if ( $DRAC{GlobalSystemStatus} eq "Critical" ) {
+      print "$CHECK_NAME CRITICAL - Critical system error.  Please login to iDRAC to investigate.  $output_details | $perf_data \n";
+      exit $CRITICAL;
+   }
+   if ( $DRAC{GlobalSystemStatus} eq "nonRecoverable" ) {
+      print "$CHECK_NAME CRITICAL - nonRecoverable system error.  Please login to iDRAC to investigate.  $output_details | $perf_data \n";
+      exit $CRITICAL;
+   }
+   #
+   # Check the power state
+   #
+   if ( $DRAC{systemPowerState} eq "Other" ||  $DRAC{systemPowerState} eq "Unknown" ) {
+      print "$CHECK_NAME UNKNOWN - could not determine system power state.  Please login to iDRAC to investigate.  $output_details | $perf_data \n";
+      exit $UNKNOWN;
+   }
+   if ( $DRAC{systemPowerState} eq "Off" ) {
+      print "$CHECK_NAME WARN - power is off.  Please login to iDRAC to investigate.  $output_details | $perf_data \n";
+      exit $CRITICAL;
+   }
+   #
+   # Check the power-up time.  This warns if there was a recent reboot
+   #
+   if ( $DRAC{systemPowerUpTime} < 3600 ) {
+      print "$CHECK_NAME WARN - recent power cycle detected, uptime is $DRAC{systemPowerUpTime_humanreadable}.  Please login to iDRAC to investigate.  $output_details | $perf_data \n";
+      exit $WARN;
+   }
+   #
+   # We should only get this far if everything is ok
+   #
+   if ( $DRAC{GlobalSystemStatus} eq "ok" ) {
+      print "$CHECK_NAME OK - $output_details | $perf_data \n";
+      exit $OK;
+   }
+   #
+   # we should never get this far
+   #
+   print "$CHECK_NAME OK - $output_details | $perf_data \n";
+   exit $OK;
+}                                                                       #end of subroutine
+
+
+
+# --------------------------- main body of program ----------------------
+get_options;
+sanity_checks;
+get_system_health; 
+get_system_power_state;
+get_system_uptime;
+get_system_service_tag;
+get_system_model_number;
+get_system_ram;
+get_system_cpu;
+print_output;
+
+
+
+
