@@ -8,7 +8,7 @@ perl, snmpget on nagios server
 
 You will need a section in the services.cfg file on the nagios server that looks similar to the following.
 ```
-    # Define a service to check the SuperMicro IPMI
+    # Define a service to check the Dell iDRAC service processor
     # Parameters are SNMP community name
     define service {
        use                             generic-service
