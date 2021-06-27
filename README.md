@@ -12,9 +12,9 @@ You will need a section in the services.cfg file on the nagios server that looks
     # Parameters are SNMP community name
     define service {
        use                             generic-service
-          hostgroup_name                  all_dell_idrac9
-          service_description             iDRAC
-          check_command                   check_dell_idrac9!public
+          hostgroup_name               all_dell_idrac9
+          service_description          iDRAC
+          check_command                check_dell_idrac9!public
           }
 ```
 
@@ -24,6 +24,6 @@ You will also need a command definition similar to the following in commands.cfg
     # parameters are -H hostname -C snmp_community
     define command{
        command_name    check_dell_idrac9
-          command_line    $USER1$/check_dell_idrac9 -H $HOSTADDRESS$ -C $ARG1$
-           }
+       command_line    $USER1$/check_dell_idrac9 -H $HOSTADDRESS$ -C $ARG1$
+       }
 ```
