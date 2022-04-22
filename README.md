@@ -27,3 +27,7 @@ You will also need a command definition similar to the following in commands.cfg
        command_line    $USER1$/check_dell_idrac9 -H $HOSTADDRESS$ -C $ARG1$
        }
 ```
+
+# Output
+You should see output similar to the following
+<img src=images/idrac9.png>
