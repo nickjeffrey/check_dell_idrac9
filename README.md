@@ -2,9 +2,12 @@
 nagios check for Dell iDRAC 9 service processors
 
 # Requirements
-perl, snmpget on nagios server
+perl, snmpget on nagios server, SNMP enabled on iDRAC service processor
 
 # Configuration
+
+Enable SNMP on the iDRAC service processor
+<img src=images/idrac9_snmp.png>
 
 You will need a section in the services.cfg file on the nagios server that looks similar to the following.
 ```
